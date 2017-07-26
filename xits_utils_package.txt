@@ -1,0 +1,249 @@
+create or replace package xits_utils is
+
+ function make_str_first_letters_words(v_string in varchar2) return varchar2;
+
+ function get_time_in_words(num in number, unitName in varchar2) return varchar2;
+
+ function convert_to_number(p_str in varchar2) return number;
+ 
+ function STRING_TO_ABBR(IN_STR IN VARCHAR2) RETURN VARCHAR2;
+ 
+ function round_epa(p_num number, p_round number) return varchar2;
+ 
+ function convert_to_char(p_num in number) return varchar2;
+ 
+ function round_iso_epa (picture in varchar2, numb in number) return varchar2;
+  
+end xits_utils;
+
+
+
+create or replace package body xits_utils is
+
+ --- Функция формирует строку по первым буквам слов из фразы
+ function make_str_first_letters_words(v_string in varchar2) return varchar2 is
+
+  l_res varchar2(255) := '';
+
+  begin
+
+    if (v_string is not null and length(trim(v_string)) <> 0) then
+        begin
+          l_res := substr(lower(trim(v_string)), 1, 1);
+
+          if length(v_string) > 1 then
+             begin
+               for i in 2..length(v_string) loop
+                    if substr(v_string, i, 1) = ' ' then
+                          l_res := l_res || substr(v_string, i + 1, 1);
+                    end if;
+               end loop;
+             end;
+          elsif length(v_string) = 1 then l_res := v_string;
+          else
+              l_res := '';
+          end if;
+
+        end;
+    end if;
+
+    return l_res;
+ end;
+
+ --- Функция формирует строку, например 'год', 'года' 'лет', в зависимости от переданного параметра (значение)
+ --- и типа единицы измерения
+ function get_time_in_words(num in number, unitName in varchar2) return varchar2 is
+  type unitsarray is varray(3) of varchar2(10);
+
+  units unitsarray;
+
+  m number;
+  s varchar2(255) := '';
+begin
+  case when (unitName is not null and lower(unitName) = 'год') then units := unitsarray('год', 'года', 'лет');
+       when (unitName is not null and lower(unitName) = 'месяц') then units := unitsarray('месяц', 'месяца', 'месяцев');
+       else return null;
+  end case;
+
+  if (units.count > 0) then
+      begin
+       if (num > 0) then
+           begin
+            if (num < 10) then
+                m := to_number(substr(to_char(num), length(to_char(num)), 1));
+                if (m = 1) then s := units(1);
+                    elsif (m <= 4) then s := units(2);
+                    else s := units(3);
+                end if;
+                elsif (num >= 10 and num <= 20) then s := units(3);
+                elsif (num > 20) then
+                    begin
+                      m := to_number(substr(to_char(num), length(to_char(num)), 1));
+                      if (m = 1) then s := units(1);
+                         elsif (m > 1 and m <= 4) then s := units(2);
+                         elsif (m = 0 or m >= 5) then s := units(3);
+                      end if;
+                    end;
+              end if;
+            end;
+        end if;
+      end;
+  end if;
+
+  return s;
+end get_time_in_words;
+
+function convert_to_number(p_str in varchar2) return number is
+begin
+  
+return nvl(xto_number(replace(p_str,',','.')),xto_number(replace(p_str,'.',',')));
+
+exception
+when others then return null;
+end;
+
+FUNCTION STRING_TO_ABBR(IN_STR IN VARCHAR2) RETURN VARCHAR2
+IS
+OUT_STR VARCHAR2(500); --ВЫХОДНАЯ СТРОКА
+STR VARCHAR(500);     --СТРОКА, С КОТОРОЙ РАБОТАЕМ
+WORD_SPACE NUMBER;    --ПОЗИЦИЯ ПЕРВОГО ПРОБЕЛА В СТРОКЕ
+WORD_DASH NUMBER;     --ПОЗИЦИЯ ПЕРВОГО ТИРЕ В СТРОКЕ
+WORD_BEGIN  NUMBER;   --ПОЗИЦИЯ НАЧАЛА СЛОВА
+WORD_END  NUMBER;     --ПОЗИЦИЯ КОНЦА СЛОВА
+WORD  VARCHAR2(20);   --СЛОВО
+
+BEGIN
+  /* Функция получения из строки аббревиатуры.
+     ВАЖНО: если пришло одно слово, вернет только его, иначе сделает аббревиатуру
+            разделителем между словами могут служить пробел или дефис.  */
+  STR := IN_STR;
+  WORD_BEGIN := 1;
+  OUT_STR := '';
+  WHILE LENGTH(STR) IS NOT NULL
+    LOOP
+      SELECT CASE WHEN INSTR(STR, ' ')=0 THEN 1000000 ELSE INSTR(STR, ' ') END, --позиция пробела в строке
+             CASE WHEN INSTR(STR, '-')=0 THEN 1000000 ELSE INSTR(STR, '-') END  --позиция тире в строке
+      INTO WORD_SPACE,WORD_DASH
+      FROM DUAL;
+
+      IF WORD_SPACE<WORD_DASH        --определяем, что у нас раньше стоит между словами - пробел или тире
+        THEN WORD_END:=WORD_SPACE-1; --считаем это значение концом слова
+        ELSE WORD_END:=WORD_DASH-1;
+      END IF;
+
+      IF (WORD_END=999999 AND LENGTH(OUT_STR) IS NULL) --когда пришло одно слово, вернуть его
+        THEN SELECT STR,     NULL
+             INTO   OUT_STR, STR
+             FROM DUAL;
+        ELSE SELECT SUBSTR(STR,WORD_BEGIN,WORD_END), TRIM(LTRIM(STR, SUBSTR(STR,WORD_BEGIN,WORD_END+1) )), OUT_STR||SUBSTR(STR,WORD_BEGIN,WORD_BEGIN)
+             INTO   WORD,                            STR,                                                OUT_STR
+             FROM DUAL;
+      END IF;
+
+    END LOOP;
+  RETURN(OUT_STR);
+END STRING_TO_ABBR;
+
+function round_epa(p_num number, p_round number) return varchar2 is
+  p_str varchar2(255) := '';
+  p_str_cel varchar2(255) := '';
+  p_str_drob varchar2(255) := '';  
+  len_cel number := 0;
+  len_drob number := 0;
+  
+  new_str varchar2(255) := '';
+begin
+  p_str := xits_utils.convert_to_char(p_num);
+  p_str_cel := replace(ltrim(rtrim(p_str, '0123456789-±<> '),'0'), ',', ''); --получаем целую часть
+  p_str_drob := replace(ltrim(p_str, '0123456789-±<> '), ',', ''); --получаем дробную часть
+  len_cel := nvl(length(p_str_cel),0); --длина целой части
+  len_drob := nvl(length(p_str_drob),0); --длина дробной части
+  
+  if len_cel + len_drob > p_round --сумма целой и дробной части больше порядка округления
+    then if len_cel >= p_round --целая часть больше или равна порядку округления
+           then if len_cel = p_round --если равна, вернуть целую часть числом
+                  then new_str := p_str_cel;
+                else new_str := xits_utils.convert_to_char(round(p_num,-p_round)); --если целая часть больше, округлить ее
+                end if;
+         else new_str := xits_utils.convert_to_char(round(p_num, p_round-len_cel)); --округлить исходно число по порядку округления за вычетом длины целой части
+         end if; 
+  else new_str := xits_utils.convert_to_char(p_num); --длина суммы целой и дробной части равна порядку округления или меньше, что нужно дописывать нули
+  end if;
+  
+  return( new_str );
+end;
+
+function convert_to_char(p_num in number) return varchar2 is
+  result_string varchar2(255) := '';
+begin
+   if (SUBSTR(LTRIM(to_char(REPLACE(p_num,'.',',')) ,'-'),1,1)=',') --проверяем, нужно ли добавлять 0
+     then if (SUBSTR(to_char(REPLACE(p_num,'.',',')),1,1)='-') --проверяем на отрицательность
+            then result_string := '-0'||LTRIM(to_char(REPLACE(p_num,'.',',')) ,'-');
+            else result_string := '0'||to_char(REPLACE(p_num,'.',','));
+          end if;
+     else result_string := to_char(REPLACE(p_num,'.',',')); 
+   end if;
+   
+   return result_string;
+
+exception
+when others then return null;
+end;
+
+
+--функция округления по логике ISO,* или ЕРА,*
+--  при обычном округлении отбрасываются нули после запятой, но нужно, чтобы они всегда были
+--  потому логика функции построена именно на этом: в зависимости от типа округления 
+--  (знаки после запятой или значащие цифры) проверяется еще раз количество знаков
+function round_iso_epa (picture in varchar2, numb in number) return varchar2 is
+  result_string varchar2(255) := '';
+  avg_roundto number := 0;
+  after_comma varchar2(255) := '';
+  len_numb number := 0;
+  rounded_iso varchar2(255) := '';
+  len_r_iso number := 0;
+  after_comma_iso varchar2(255) := '';
+  rounded_epa varchar2(255) := '';  
+begin
+  avg_roundto := to_number(ltrim(PICTURE, rtrim(PICTURE,'0987654321'))); --округлять до (значение)
+  after_comma := ltrim(ltrim(numb,'0123456789 '),',.'); --часть входного числа после запятой
+  len_numb := length(numb); --длина входного числа
+  rounded_iso := xits_utils.convert_to_char( round(numb,avg_roundto) ); --округленное по ISO число
+  len_r_iso := length(rounded_iso);
+  after_comma_iso := ltrim(ltrim(rounded_iso,'0123456789 '),',.');
+  rounded_epa := xits_utils.round_epa(numb,avg_roundto); --округленное по значащим цифрам число
+  
+  if ltrim(rtrim(numb,'0123456789 '),'0123456789 ') = ',' or ltrim(rtrim(numb,'0123456789 '),'0123456789 ') = '.' --в числе есть запятая
+    then if picture like 'ISO%'
+           then if length(after_comma) = avg_roundto  --если ISO и после запятой столько знаков, сколько нужно
+                  then result_string := xits_utils.convert_to_char(numb);
+                elsif length(after_comma_iso) = avg_roundto or avg_roundto = 0--или округленное сразу в норме или не нужны знаки после запятой
+                  then result_string := rounded_iso; --выводим сделанное округление без изменений
+                else if rounded_iso = '0' and avg_roundto <> 0--если было число с дробной частью, которое после округления стало = 0 
+                       then result_string := rounded_iso||rpad(',',avg_roundto+1,'0');
+                     else result_string := rpad(rounded_iso, len_r_iso - length(after_comma_iso) + avg_roundto, '0');--если не хватает, дописываем нули после запятой 
+                     end if;
+                end if;
+         elsif length(replace(replace(ltrim(rounded_epa,'0'),',',''),'.','')) >= avg_roundto --если ЕРА и суммарная длина такая, какая нужна
+           then result_string := rounded_epa; --выводим сделанное округление без изменений
+         else if ltrim(rounded_epa,'0123456789 ') is null or ltrim(rounded_epa,'0123456789 ')='' --если целое число после округления, а запятая нужна
+                then result_string := rpad(rounded_epa||',', avg_roundto + 1, '0');
+              else result_string := rpad(rounded_epa, length(ltrim(rounded_epa,'0')) + avg_roundto + 1 - length(ltrim(rounded_epa,'0,')), '0'); --если не хватает, дописываем нули после запятой
+              end if;
+         end if;
+  elsif picture like 'ISO%' --если в числе нет запятой и это ISO
+    then if avg_roundto <> 0 --если знаки после запятой вообще должны быть
+           then result_string := rounded_iso||rpad(',',avg_roundto+1,'0'); --дописываем недостающее количество нулей после запятой
+         else result_string := rounded_iso; --выводим сделанное округление без изменений
+         end if;
+  else if length(rounded_epa) < avg_roundto --если в числе нет запятой и это ЕРА
+         then result_string := rounded_epa || rpad(',', avg_roundto - length(rounded_epa) + 1 , '0');
+       else result_string := rounded_epa; --выводим сделанное округление без изменений
+       end if;
+  end if;
+  
+  return result_string;
+  
+ end;
+
+end xits_utils;

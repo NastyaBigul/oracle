@@ -1,0 +1,197 @@
+with main_data as (
+  select row_number() over (partition by ordno,X_NAME_FOR_REPORT order by SPECSORTER) rown_d,
+         t.*       
+  from (select  distinct
+                f.folderno,
+                o.ordno, 
+                dep.descriptions AS head_title, --шапка
+                nvl(f.x_lotnum,'-')       AS lotnum, --№ партии
+                nvl(m.matname,'-')        AS marka, --марка
+                o.x_dtselection_fact AS date_time_select, --дата, время отбора пробы
+                nvl(case 
+                      when o.x_unitedsample='Y' then 'проба обьединенная'
+                      when o.x_unitedsample='N' then 'проба точечная'
+                      else ''
+                    end,'-') probe_charact,  --характер пробы
+                nvl(case
+                      when sa.a_sbr_onreports='N' then sa.analyte
+                      else ''
+                    end,'-') AS who_knows, --непонятно, что это xD
+                nvl(trim(nvl(sa.X_NAME_FOR_REPORT,a.sinonym)) || case
+                                                                   when a.units is not null then ', ' || a.units
+                                                                 end, '-') AS X_NAME_FOR_REPORT,
+                nvl(case
+                      when (select tkrl.norm_ru
+                           from tk_raw_limits tkrl 
+                           where r.specno = tkrl.specno
+                             and r.testcode = tkrl.testcode
+                             and r.analyte = tkrl.analyte
+                             and tkrl.tk_priority = f.tk_priority_mark
+                             and rownum=1) is not null then (select tkrl.norm_ru
+                                                             from tk_raw_limits tkrl 
+                                                             where r.specno = tkrl.specno
+                                                               and r.testcode = tkrl.testcode
+                                                               and r.analyte = tkrl.analyte
+                                                               and tkrl.tk_priority = f.tk_priority_mark
+                                                               and rownum=1)
+                      when sa.pass_text is not null then sa.pass_text
+                      when sa.pass_text is null and sa.higha is not null and sa.lowa is not null   then TRANSLATE(sa.lowa, '.', ',') || ' - ' || TRANSLATE(sa.higha, '.', ',')
+                      when sa.pass_text is null and sa.higha is not null and sa.lowa is     null   then 'не более ' || TRANSLATE(sa.higha, '.', ',')
+                      when sa.pass_text is null and sa.higha is     null and sa.lowa is not null   then 'не менее ' || TRANSLATE(sa.lowa, '.', ',')
+                      else ''
+                    end,'-') AS norm, --норма                                          
+                nvl(r.final,'-') AS final, --факт
+                xits_utils.convert_to_number(trim(rtrim(ltrim(r.final,'йцукенгшщзхъэждлорпавыфячсмитьбю'),'йцукенгшщзхъэждлорпавыфячсмитьбю'))) as final_num,
+                --xits_utils.convert_to_number(r.final) as final_num,
+                nvl(u1.fullname,'-') AS FIO_otobr, --фио отобравшего пробу
+                nvl(u2.fullname,'-') AS FIO_labor,--фио лаборанта
+                f.x_controltype,
+                sa.SPTESTSORTER,
+                sa.SPECSORTER,
+                r.testcode,
+                o.X_PSNAME,
+                xps.psname,
+                case when r.s in ('OOS','OOS_A','OOS_B') then 1 else 0 end s,
+                to_number(ltrim(sa.PICTURE, rtrim(sa.PICTURE,'0987654321'))) avg_roundto,
+                sa.PICTURE,
+                max(trl.tk_mark_name) over (partition by o.ordno) as mat_sort
+        FROM folders                       f   
+        JOIN departments                   dep ON dep.dept = f.dept
+        JOIN orders                        o   ON f.folderno = o.folderno         AND o.status <> 'Cancelled'
+        JOIN sample_programs               sp  ON sp.sp_code = o.sp_code
+        JOIN ordtask                       ot  ON o.ordno = ot.ordno          /*    AND ot.ts <> 'Cancelled' AND ((ot.testcode in (select testcode 
+                                                                                                                                 from CONSOLIDATED_REP_TESTCODES 
+                                                                                                                                 where id_report=:REPORT_ID)
+                                                                                                                 and (select count(testcode) 
+                                                                                                                      from CONSOLIDATED_REP_TESTCODES 
+                                                                                                                      where id_report=:REPORT_ID) <> 0)
+                                                                                                                 or (select count(t.testcode) 
+                                                                                                                     from CONSOLIDATED_REP_TESTCODES t
+                                                                                                                     join CONSOLIDATED_REP_SHEETS sh on t.id_sheet=sh.origrec
+                                                                                                                     join CONSOLIDATED_REP_POINTS p on p.id_sheet=sh.origrec
+                                                                                                                     where t.id_report=:REPORT_ID
+                                                                                                                       and o.X_PSNAME=p.ps_origrec) = 0)*/
+        JOIN results                       r   ON ot.ordno = r.ordno              AND ot.testcode = r.testcode  AND r.final IS NOT NULL        AND r.s <> 'Cancelled'
+        left join users                    u1  on u1.usrnam = o.x_sampler
+        left join users                    u2  on u2.usrnam = r.firstuser
+        LEFT JOIN spec_analytes            sa  ON r.specno = sa.specno            AND r.testcode = sa.testcode  AND r.analyte = sa.analyte     --AND sa.a_sbr_onreports = 'Y'
+        LEFT JOIN tests                    t   ON ot.testcode = t.testcode
+        LEFT JOIN analytes                 a   ON r.analyte = a.analyte           AND r.testcode = a.testcode
+        LEFT JOIN materials                m   ON m.matcode = sp.matcode
+        LEFT JOIN prodgroupsites           prd ON sp.prodgroup = prd.prodgroup
+        JOIN x_procstruct                  xps ON o.X_PSNAME = xps.origrec
+        LEFT JOIN tk_raw_limits            trl ON trl.specno = r.specno           AND r.testcode = trl.testcode AND r.analyte = trl.analyte AND trl.tk_priority = f.tk_priority_mark
+        WHERE prd.dept like 'Лаборат%рия ПП%'
+          AND o.x_dtselection between :dateStart AND :dateEnd
+          AND f.x_confirmed = 'Y'
+          AND sa.a_sbr_onreports = 'Y' 
+          AND f.x_controltype in (select x_controltype  --ограничение по типу контроля
+                                  from CONSOLIDATED_REP_TYPES t 
+                                  join CONSOLIDATED_REP_SHEETS sh on t.id_sheet=sh.origrec 
+                                  where sh.id_report=:REPORT_ID 
+                                    and t.is_active='Y')          
+          AND o.X_PSNAME in (select ps_origrec                 --ограничение по точкам отбора
+                             from CONSOLIDATED_REP_POINTS p 
+                             join CONSOLIDATED_REP_SHEETS sh on p.id_sheet=sh.origrec
+                             where sh.id_report=:REPORT_ID)          
+       ) t
+),
+
+parametr as( 
+    select sh.sheet_name, 
+           sh.in_report_sheet_name, 
+           t.x_controltype, 
+           c.column_name column_title,
+           case 
+             when c.column_head=c.column_name then ''
+             else c.column_head
+           end column_subtitle, 
+           c.sorter,
+           sh.origrec id_sheet,
+           p.ps_origrec X_PSNAME,
+           (select max(cc.sorter) 
+            from CONSOLIDATES_REP_COLUMNS cc
+            where cc.id_sheet = sh.origrec
+              and cc.show_column='Y'
+              and cc.sorter < (select c.sorter 
+                               from CONSOLIDATED_REP_SHEETS  sh 
+                               join CONSOLIDATES_REP_COLUMNS c on c.id_sheet=sh.origrec and c.show_column='Y' 
+                               where id_report=:REPORT_ID 
+                                 and sh.origrec = cc.id_sheet 
+                                 and column_head='Норма')) norm_sorter
+    from CONSOLIDATED_REP_SHEETS  sh
+    join CONSOLIDATED_REP_TYPES   t on t.id_sheet=sh.origrec and t.is_active='Y'
+    join CONSOLIDATES_REP_COLUMNS c on c.id_sheet=sh.origrec and c.show_column='Y'
+    join CONSOLIDATED_REP_POINTS  p on p.id_sheet=sh.origrec
+    where id_report=:REPORT_ID
+      and sh.origrec in (:SHEET_ID)
+    order by x_controltype
+)
+
+select md.ordno,
+       p.sheet_name,
+       p.norm_sorter,
+       rown_d,
+       (select rown from (select rownum rown, x_name_for_report
+                          from (select distinct x_name_for_report
+                                from main_data)) where x_name_for_report=md.x_name_for_report) rown,
+       (select max(rown) from (select rownum rown, x_name_for_report
+                          from (select distinct x_name_for_report
+                                from main_data)) ) max_param,
+       max(sorter) over (partition by sheet_name) max_sort, 
+       min((select rown from (select rownum rown, x_name_for_report
+                          from (select distinct x_name_for_report
+                                from main_data)) where x_name_for_report=md.x_name_for_report)) over (partition by sheet_name) min_sort,
+       p.in_report_sheet_name, 
+       p.x_controltype, 
+       case 
+         when p.column_title='Анализируемые показатели норма' or p.column_title='Анализируемые показатели факт' then md.X_NAME_FOR_REPORT
+         else p.column_title
+       end column_title,
+       case 
+         when p.column_title='Анализируемые показатели норма' or p.column_title='Анализируемые показатели факт' then md.X_NAME_FOR_REPORT
+         when p.SORTER>p.NORM_SORTER then p.column_title
+         else 'title_for_connection'
+       end column_title_stats,
+       case 
+         when p.column_title='Анализируемые показатели норма' or p.column_title='Анализируемые показатели факт' then p.column_subtitle
+         else p.column_title
+       end column_subtitle_stats,
+       p.column_title column_title_old,
+       p.column_subtitle, 
+       p.sorter,
+       md.head_title,
+       case
+         when p.column_title='Дата и время отбора' then to_char(md.date_time_select,'DD.MM.YYYY HH24:MI')
+         when p.column_title='№ партии' then md.lotnum
+         when p.column_title='Характер пробы' then md.probe_charact
+         when p.column_title='Фамилия лаборанта' then md.FIO_labor
+         when p.column_title='Анализируемые показатели норма' then md.norm
+         when p.column_title='Точка отбора' then md.psname
+         when p.column_title='Марка' then md.marka
+         when p.column_title='Сорт' then md.mat_sort
+         when p.column_title='Анализируемые показатели факт' then md.final
+         when p.column_title='Фамилия лица, отобравшего пробу' then md.FIO_otobr
+       end final,
+       md.date_time_select,
+       case 
+         when p.column_title='Анализируемые показатели норма' or p.column_title='Анализируемые показатели факт' then md.SPECSORTER
+       end SPECSORTER,      
+       case 
+         when p.column_title='Анализируемые показатели норма' or p.column_title='Анализируемые показатели факт' then md.SPTESTSORTER
+       end SPTESTSORTER,
+       case when min(final_num) over (partition by id_sheet,X_NAME_FOR_REPORT) is not null
+         then xits_utils.round_iso_epa(md.picture, min(final_num) over (partition by id_sheet,X_NAME_FOR_REPORT)) end min_zn,
+       case when max(final_num) over (partition by id_sheet,X_NAME_FOR_REPORT) is not null 
+         then xits_utils.round_iso_epa(md.picture, max(final_num) over (partition by id_sheet,X_NAME_FOR_REPORT)) end max_zn,
+       case when avg(final_num) over (partition by id_sheet,X_NAME_FOR_REPORT) is not null
+         then xits_utils.round_iso_epa(md.picture, avg(final_num) over (partition by id_sheet,X_NAME_FOR_REPORT)) end avg_zn,
+       count(case when p.column_title like 'Анализируемые показатели%' then final end) over (partition by id_sheet,X_NAME_FOR_REPORT)/2 count_ed,
+       sum(case when p.column_title like 'Анализируемые показатели%' then s end) over (partition by id_sheet,X_NAME_FOR_REPORT)/2 oos_ed,
+       round((sum(case when p.column_title like 'Анализируемые показатели%' then s end) over (partition by id_sheet,X_NAME_FOR_REPORT))
+             /
+             (count(case when p.column_title like 'Анализируемые показатели%' then final end) over (partition by id_sheet,X_NAME_FOR_REPORT))*100,1) oos_proc,
+       s     
+from main_data md
+join parametr p on p.x_controltype=md.x_controltype and p.X_PSNAME=md.X_PSNAME
+order by sheet_name, p.x_controltype, p.sorter

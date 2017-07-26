@@ -1,0 +1,1787 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Report xmlns:rd="http://schemas.microsoft.com/SQLServer/reporting/reportdesigner" xmlns:cl="http://schemas.microsoft.com/sqlserver/reporting/2010/01/componentdefinition" xmlns="http://schemas.microsoft.com/sqlserver/reporting/2010/01/reportdefinition">
+  <AutoRefresh>0</AutoRefresh>
+  <DataSources>
+    <DataSource Name="DS">
+      <DataSourceReference>ORCL_TOMSK_TEST</DataSourceReference>
+      <rd:SecurityType>None</rd:SecurityType>
+      <rd:DataSourceID>c574e48d-44b4-415d-9fe7-5351ffe401d1</rd:DataSourceID>
+    </DataSource>
+  </DataSources>
+  <DataSets>
+    <DataSet Name="DS_REPORT_ID">
+      <Query>
+        <DataSourceName>DS</DataSourceName>
+        <CommandText>select report_name, origrec 
+from consolidated_reports</CommandText>
+      </Query>
+      <Fields>
+        <Field Name="REPORT_NAME">
+          <DataField>REPORT_NAME</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="ORIGREC">
+          <DataField>ORIGREC</DataField>
+          <rd:TypeName>System.Decimal</rd:TypeName>
+        </Field>
+      </Fields>
+    </DataSet>
+    <DataSet Name="DS_DATA">
+      <Query>
+        <DataSourceName>DS</DataSourceName>
+        <QueryParameters>
+          <QueryParameter Name=":REPORT_ID">
+            <Value>=Parameters!REPORT_ID.Value</Value>
+          </QueryParameter>
+          <QueryParameter Name=":dateStart">
+            <Value>=Parameters!dateStart.Value</Value>
+          </QueryParameter>
+          <QueryParameter Name=":dateEnd">
+            <Value>=Parameters!dateEnd.Value</Value>
+          </QueryParameter>
+          <QueryParameter Name=":SHEET_ID">
+            <Value>=Parameters!SHEET_ID.Value</Value>
+          </QueryParameter>
+        </QueryParameters>
+        <CommandText>with main_data as (
+  select row_number() over (partition by ordno,X_NAME_FOR_REPORT order by SPECSORTER) rown_d,
+         t.*       
+  from (select  distinct
+                f.folderno,
+                o.ordno, 
+                dep.descriptions AS head_title, --шапка
+                nvl(f.x_lotnum,'-')       AS lotnum, --№ партии
+                nvl(m.matname,'-')        AS marka, --марка
+                o.x_dtselection_fact AS date_time_select, --дата, время отбора пробы
+                nvl(case 
+                      when o.x_unitedsample='Y' then 'проба обьединенная'
+                      when o.x_unitedsample='N' then 'проба точечная'
+                      else ''
+                    end,'-') probe_charact,  --характер пробы
+                nvl(case
+                      when sa.a_sbr_onreports='N' then sa.analyte
+                      else ''
+                    end,'-') AS who_knows, --непонятно, что это xD
+                nvl(trim(nvl(sa.X_NAME_FOR_REPORT,a.sinonym)) || case
+                                                                   when a.units is not null then ', ' || a.units
+                                                                 end, '-') AS X_NAME_FOR_REPORT,
+                nvl(case
+                      when (select tkrl.norm_ru
+                           from tk_raw_limits tkrl 
+                           where r.specno = tkrl.specno
+                             and r.testcode = tkrl.testcode
+                             and r.analyte = tkrl.analyte
+                             and tkrl.tk_priority = f.tk_priority_mark
+                             and rownum=1) is not null then (select tkrl.norm_ru
+                                                             from tk_raw_limits tkrl 
+                                                             where r.specno = tkrl.specno
+                                                               and r.testcode = tkrl.testcode
+                                                               and r.analyte = tkrl.analyte
+                                                               and tkrl.tk_priority = f.tk_priority_mark
+                                                               and rownum=1)
+                      when sa.pass_text is not null then sa.pass_text
+                      when sa.pass_text is null and sa.higha is not null and sa.lowa is not null   then TRANSLATE(sa.lowa, '.', ',') || ' - ' || TRANSLATE(sa.higha, '.', ',')
+                      when sa.pass_text is null and sa.higha is not null and sa.lowa is     null   then 'не более ' || TRANSLATE(sa.higha, '.', ',')
+                      when sa.pass_text is null and sa.higha is     null and sa.lowa is not null   then 'не менее ' || TRANSLATE(sa.lowa, '.', ',')
+                      else ''
+                    end,'-') AS norm, --норма                                          
+                nvl(r.final,'-') AS final, --факт
+                xits_utils.convert_to_number(trim(rtrim(ltrim(r.final,'йцукенгшщзхъэждлорпавыфячсмитьбю'),'йцукенгшщзхъэждлорпавыфячсмитьбю'))) as final_num,
+                --xits_utils.convert_to_number(r.final) as final_num,
+                nvl(u1.fullname,'-') AS FIO_otobr, --фио отобравшего пробу
+                nvl(u2.fullname,'-') AS FIO_labor,--фио лаборанта
+                f.x_controltype,
+                sa.SPTESTSORTER,
+                sa.SPECSORTER,
+                r.testcode,
+                o.X_PSNAME,
+                xps.psname,
+                case when r.s in ('OOS','OOS_A','OOS_B') then 1 else 0 end s,
+                to_number(ltrim(sa.PICTURE, rtrim(sa.PICTURE,'0987654321'))) avg_roundto,
+                sa.PICTURE,
+                max(trl.tk_mark_name) over (partition by o.ordno) as mat_sort
+        FROM folders                       f   
+        JOIN departments                   dep ON dep.dept = f.dept
+        JOIN orders                        o   ON f.folderno = o.folderno         AND o.status &lt;&gt; 'Cancelled'
+        JOIN sample_programs               sp  ON sp.sp_code = o.sp_code
+        JOIN ordtask                       ot  ON o.ordno = ot.ordno          /*    AND ot.ts &lt;&gt; 'Cancelled' AND ((ot.testcode in (select testcode 
+                                                                                                                                 from CONSOLIDATED_REP_TESTCODES 
+                                                                                                                                 where id_report=:REPORT_ID)
+                                                                                                                 and (select count(testcode) 
+                                                                                                                      from CONSOLIDATED_REP_TESTCODES 
+                                                                                                                      where id_report=:REPORT_ID) &lt;&gt; 0)
+                                                                                                                 or (select count(t.testcode) 
+                                                                                                                     from CONSOLIDATED_REP_TESTCODES t
+                                                                                                                     join CONSOLIDATED_REP_SHEETS sh on t.id_sheet=sh.origrec
+                                                                                                                     join CONSOLIDATED_REP_POINTS p on p.id_sheet=sh.origrec
+                                                                                                                     where t.id_report=:REPORT_ID
+                                                                                                                       and o.X_PSNAME=p.ps_origrec) = 0)*/
+        JOIN results                       r   ON ot.ordno = r.ordno              AND ot.testcode = r.testcode  AND r.final IS NOT NULL        AND r.s &lt;&gt; 'Cancelled'
+        left join users                    u1  on u1.usrnam = o.x_sampler
+        left join users                    u2  on u2.usrnam = r.firstuser
+        LEFT JOIN spec_analytes            sa  ON r.specno = sa.specno            AND r.testcode = sa.testcode  AND r.analyte = sa.analyte     --AND sa.a_sbr_onreports = 'Y'
+        LEFT JOIN tests                    t   ON ot.testcode = t.testcode
+        LEFT JOIN analytes                 a   ON r.analyte = a.analyte           AND r.testcode = a.testcode
+        LEFT JOIN materials                m   ON m.matcode = sp.matcode
+        LEFT JOIN prodgroupsites           prd ON sp.prodgroup = prd.prodgroup
+        JOIN x_procstruct                  xps ON o.X_PSNAME = xps.origrec
+        LEFT JOIN tk_raw_limits            trl ON trl.specno = r.specno           AND r.testcode = trl.testcode AND r.analyte = trl.analyte AND trl.tk_priority = f.tk_priority_mark
+        WHERE prd.dept like 'Лаборат%рия ПП%'
+          AND o.x_dtselection between :dateStart AND :dateEnd
+          AND f.x_confirmed = 'Y'
+          AND sa.a_sbr_onreports = 'Y' 
+          AND f.x_controltype in (select x_controltype  --ограничение по типу контроля
+                                  from CONSOLIDATED_REP_TYPES t 
+                                  join CONSOLIDATED_REP_SHEETS sh on t.id_sheet=sh.origrec 
+                                  where sh.id_report=:REPORT_ID 
+                                    and t.is_active='Y')          
+          AND o.X_PSNAME in (select ps_origrec                 --ограничение по точкам отбора
+                             from CONSOLIDATED_REP_POINTS p 
+                             join CONSOLIDATED_REP_SHEETS sh on p.id_sheet=sh.origrec
+                             where sh.id_report=:REPORT_ID)          
+       ) t
+),
+
+parametr as( 
+    select sh.sheet_name, 
+           sh.in_report_sheet_name, 
+           t.x_controltype, 
+           c.column_name column_title,
+           case 
+             when c.column_head=c.column_name then ''
+             else c.column_head
+           end column_subtitle, 
+           c.sorter,
+           sh.origrec id_sheet,
+           p.ps_origrec X_PSNAME,
+           (select max(cc.sorter) 
+            from CONSOLIDATES_REP_COLUMNS cc
+            where cc.id_sheet = sh.origrec
+              and cc.show_column='Y'
+              and cc.sorter &lt; (select c.sorter 
+                               from CONSOLIDATED_REP_SHEETS  sh 
+                               join CONSOLIDATES_REP_COLUMNS c on c.id_sheet=sh.origrec and c.show_column='Y' 
+                               where id_report=:REPORT_ID 
+                                 and sh.origrec = cc.id_sheet 
+                                 and column_head='Норма')) norm_sorter
+    from CONSOLIDATED_REP_SHEETS  sh
+    join CONSOLIDATED_REP_TYPES   t on t.id_sheet=sh.origrec and t.is_active='Y'
+    join CONSOLIDATES_REP_COLUMNS c on c.id_sheet=sh.origrec and c.show_column='Y'
+    join CONSOLIDATED_REP_POINTS  p on p.id_sheet=sh.origrec
+    where id_report=:REPORT_ID
+      and sh.origrec in (:SHEET_ID)
+    order by x_controltype
+)
+
+select md.ordno,
+       p.sheet_name,
+       p.norm_sorter,
+       --rown,
+       rown_d,
+       (select rown from (select rownum rown, x_name_for_report
+                          from (select distinct x_name_for_report
+                                from main_data)) where x_name_for_report=md.x_name_for_report) rown,
+       --max(rown) over (partition by sheet_name) max_param,
+       (select max(rown) from (select rownum rown, x_name_for_report
+                          from (select distinct x_name_for_report
+                                from main_data)) ) max_param,
+       max(sorter) over (partition by sheet_name) max_sort, 
+       min((select rown from (select rownum rown, x_name_for_report
+                          from (select distinct x_name_for_report
+                                from main_data)) where x_name_for_report=md.x_name_for_report)) over (partition by sheet_name) min_sort,
+       p.in_report_sheet_name, 
+       p.x_controltype, 
+       case 
+         when p.column_title='Анализируемые показатели норма' or p.column_title='Анализируемые показатели факт' then md.X_NAME_FOR_REPORT
+         else p.column_title
+       end column_title,
+       case 
+         when p.column_title='Анализируемые показатели норма' or p.column_title='Анализируемые показатели факт' then md.X_NAME_FOR_REPORT
+         when p.SORTER&gt;p.NORM_SORTER then p.column_title
+         else 'title_for_connection'
+       end column_title_stats,
+       case 
+         when p.column_title='Анализируемые показатели норма' or p.column_title='Анализируемые показатели факт' then p.column_subtitle
+         else p.column_title
+       end column_subtitle_stats,
+       p.column_title column_title_old,
+       p.column_subtitle, 
+       p.sorter,
+       md.head_title,
+       case
+         when p.column_title='Дата и время отбора' then to_char(md.date_time_select,'DD.MM.YYYY HH24:MI')
+         when p.column_title='№ партии' then md.lotnum
+         when p.column_title='Характер пробы' then md.probe_charact
+         when p.column_title='Фамилия лаборанта' then md.FIO_labor
+         when p.column_title='Анализируемые показатели норма' then md.norm
+         when p.column_title='Точка отбора' then md.psname
+         when p.column_title='Марка' then md.marka
+         when p.column_title='Сорт' then md.mat_sort
+         when p.column_title='Анализируемые показатели факт' then md.final
+         when p.column_title='Фамилия лица, отобравшего пробу' then md.FIO_otobr
+       end final,
+       md.date_time_select,
+       case 
+         when p.column_title='Анализируемые показатели норма' or p.column_title='Анализируемые показатели факт' then md.SPECSORTER
+       end SPECSORTER,      
+       case 
+         when p.column_title='Анализируемые показатели норма' or p.column_title='Анализируемые показатели факт' then md.SPTESTSORTER
+       end SPTESTSORTER,
+       case when min(final_num) over (partition by id_sheet,X_NAME_FOR_REPORT) is not null
+         then xits_utils.round_iso_epa(md.picture, min(final_num) over (partition by id_sheet,X_NAME_FOR_REPORT)) end min_zn,
+       case when max(final_num) over (partition by id_sheet,X_NAME_FOR_REPORT) is not null 
+         then xits_utils.round_iso_epa(md.picture, max(final_num) over (partition by id_sheet,X_NAME_FOR_REPORT)) end max_zn,
+       case when avg(final_num) over (partition by id_sheet,X_NAME_FOR_REPORT) is not null
+         then xits_utils.round_iso_epa(md.picture, avg(final_num) over (partition by id_sheet,X_NAME_FOR_REPORT)) end avg_zn,
+       count(case when p.column_title like 'Анализируемые показатели%' then final end) over (partition by id_sheet,X_NAME_FOR_REPORT)/2 count_ed,
+       sum(case when p.column_title like 'Анализируемые показатели%' then s end) over (partition by id_sheet,X_NAME_FOR_REPORT)/2 oos_ed,
+       round((sum(case when p.column_title like 'Анализируемые показатели%' then s end) over (partition by id_sheet,X_NAME_FOR_REPORT))
+             /
+             (count(case when p.column_title like 'Анализируемые показатели%' then final end) over (partition by id_sheet,X_NAME_FOR_REPORT))*100,1) oos_proc,
+       s     
+from main_data md
+join parametr p on p.x_controltype=md.x_controltype and p.X_PSNAME=md.X_PSNAME
+--where ((md.testcode in (select testcode from CONSOLIDATED_REP_TESTCODES where id_report=:REPORT_ID and id_sheet&lt;&gt;0 and id_sheet=p.id_sheet) --ограничение по тесткоду
+--                   and (select count(testcode) from CONSOLIDATED_REP_TESTCODES where id_report=:REPORT_ID and id_sheet&lt;&gt;0 and id_sheet=p.id_sheet) &lt;&gt; 0)
+--       or              (select count(testcode) from CONSOLIDATED_REP_TESTCODES where id_report=:REPORT_ID and id_sheet&lt;&gt;0 and id_sheet=p.id_sheet) = 0)
+order by sheet_name, p.x_controltype, p.sorter</CommandText>
+      </Query>
+      <Fields>
+        <Field Name="ORDNO">
+          <DataField>ORDNO</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="SHEET_NAME">
+          <DataField>SHEET_NAME</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="NORM_SORTER">
+          <DataField>NORM_SORTER</DataField>
+          <rd:TypeName>System.Decimal</rd:TypeName>
+        </Field>
+        <Field Name="ROWN_D">
+          <DataField>ROWN_D</DataField>
+          <rd:TypeName>System.Decimal</rd:TypeName>
+        </Field>
+        <Field Name="ROWN">
+          <DataField>ROWN</DataField>
+          <rd:TypeName>System.Decimal</rd:TypeName>
+        </Field>
+        <Field Name="MAX_PARAM">
+          <DataField>MAX_PARAM</DataField>
+          <rd:TypeName>System.Decimal</rd:TypeName>
+        </Field>
+        <Field Name="MAX_SORT">
+          <DataField>MAX_SORT</DataField>
+          <rd:TypeName>System.Decimal</rd:TypeName>
+        </Field>
+        <Field Name="IN_REPORT_SHEET_NAME">
+          <DataField>IN_REPORT_SHEET_NAME</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="MIN_SORT">
+          <DataField>MIN_SORT</DataField>
+          <rd:TypeName>System.Decimal</rd:TypeName>
+        </Field>
+        <Field Name="X_CONTROLTYPE">
+          <DataField>X_CONTROLTYPE</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="COLUMN_TITLE">
+          <DataField>COLUMN_TITLE</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="COLUMN_TITLE_OLD">
+          <DataField>COLUMN_TITLE_OLD</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="COLUMN_TITLE_STATS">
+          <DataField>COLUMN_TITLE_STATS</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="COLUMN_SUBTITLE_STATS">
+          <DataField>COLUMN_SUBTITLE_STATS</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="COLUMN_SUBTITLE">
+          <DataField>COLUMN_SUBTITLE</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="SORTER">
+          <DataField>SORTER</DataField>
+          <rd:TypeName>System.Decimal</rd:TypeName>
+        </Field>
+        <Field Name="HEAD_TITLE">
+          <DataField>HEAD_TITLE</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="FINAL">
+          <DataField>FINAL</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="DATE_TIME_SELECT">
+          <DataField>DATE_TIME_SELECT</DataField>
+          <rd:TypeName>System.DateTime</rd:TypeName>
+        </Field>
+        <Field Name="SPECSORTER">
+          <DataField>SPECSORTER</DataField>
+          <rd:TypeName>System.Decimal</rd:TypeName>
+        </Field>
+        <Field Name="MIN_ZN">
+          <DataField>MIN_ZN</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="SPTESTSORTER">
+          <DataField>SPTESTSORTER</DataField>
+          <rd:TypeName>System.Decimal</rd:TypeName>
+        </Field>
+        <Field Name="MAX_ZN">
+          <DataField>MAX_ZN</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="AVG_ZN">
+          <DataField>AVG_ZN</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="COUNT_ED">
+          <DataField>COUNT_ED</DataField>
+          <rd:TypeName>System.Decimal</rd:TypeName>
+        </Field>
+        <Field Name="OOS_ED">
+          <DataField>OOS_ED</DataField>
+          <rd:TypeName>System.Decimal</rd:TypeName>
+        </Field>
+        <Field Name="OOS_PROC">
+          <DataField>OOS_PROC</DataField>
+          <rd:TypeName>System.Decimal</rd:TypeName>
+        </Field>
+        <Field Name="S">
+          <DataField>S</DataField>
+          <rd:TypeName>System.Decimal</rd:TypeName>
+        </Field>
+      </Fields>
+    </DataSet>
+    <DataSet Name="DS_SHEETS">
+      <Query>
+        <DataSourceName>DS</DataSourceName>
+        <QueryParameters>
+          <QueryParameter Name=":REPORT_ID">
+            <Value>=Parameters!REPORT_ID.Value</Value>
+          </QueryParameter>
+        </QueryParameters>
+        <CommandText>select origrec, in_report_sheet_name 
+from CONSOLIDATED_REP_SHEETS 
+where id_report=:REPORT_ID</CommandText>
+      </Query>
+      <Fields>
+        <Field Name="ORIGREC">
+          <DataField>ORIGREC</DataField>
+          <rd:TypeName>System.Decimal</rd:TypeName>
+        </Field>
+        <Field Name="IN_REPORT_SHEET_NAME">
+          <DataField>IN_REPORT_SHEET_NAME</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+      </Fields>
+    </DataSet>
+  </DataSets>
+  <ReportSections>
+    <ReportSection>
+      <Body>
+        <ReportItems>
+          <Tablix Name="Tablix1">
+            <TablixBody>
+              <TablixColumns>
+                <TablixColumn>
+                  <Width>10.30141cm</Width>
+                </TablixColumn>
+              </TablixColumns>
+              <TablixRows>
+                <TablixRow>
+                  <Height>12.85876cm</Height>
+                  <TablixCells>
+                    <TablixCell>
+                      <CellContents>
+                        <Rectangle Name="Rectangle1">
+                          <ReportItems>
+                            <Tablix Name="Tablix9">
+                              <TablixBody>
+                                <TablixColumns>
+                                  <TablixColumn>
+                                    <Width>2.5cm</Width>
+                                  </TablixColumn>
+                                  <TablixColumn>
+                                    <Width>2.5cm</Width>
+                                  </TablixColumn>
+                                  <TablixColumn>
+                                    <Width>2.5cm</Width>
+                                  </TablixColumn>
+                                </TablixColumns>
+                                <TablixRows>
+                                  <TablixRow>
+                                    <Height>0.6cm</Height>
+                                    <TablixCells>
+                                      <TablixCell>
+                                        <CellContents>
+                                          <Textbox Name="Textbox163">
+                                            <CanGrow>true</CanGrow>
+                                            <KeepTogether>true</KeepTogether>
+                                            <Paragraphs>
+                                              <Paragraph>
+                                                <TextRuns>
+                                                  <TextRun>
+                                                    <Value>Центральная заводская лаборатория</Value>
+                                                    <Style>
+                                                      <FontFamily>Times New Roman</FontFamily>
+                                                    </Style>
+                                                  </TextRun>
+                                                </TextRuns>
+                                                <Style />
+                                              </Paragraph>
+                                            </Paragraphs>
+                                            <rd:DefaultName>Textbox163</rd:DefaultName>
+                                            <Style>
+                                              <Border>
+                                                <Color>White</Color>
+                                                <Style>Solid</Style>
+                                              </Border>
+                                              <PaddingLeft>2pt</PaddingLeft>
+                                              <PaddingRight>2pt</PaddingRight>
+                                              <PaddingTop>2pt</PaddingTop>
+                                              <PaddingBottom>2pt</PaddingBottom>
+                                            </Style>
+                                          </Textbox>
+                                          <ColSpan>3</ColSpan>
+                                        </CellContents>
+                                      </TablixCell>
+                                      <TablixCell />
+                                      <TablixCell />
+                                    </TablixCells>
+                                  </TablixRow>
+                                  <TablixRow>
+                                    <Height>0.6cm</Height>
+                                    <TablixCells>
+                                      <TablixCell>
+                                        <CellContents>
+                                          <Textbox Name="Textbox169">
+                                            <CanGrow>true</CanGrow>
+                                            <KeepTogether>true</KeepTogether>
+                                            <Paragraphs>
+                                              <Paragraph>
+                                                <TextRuns>
+                                                  <TextRun>
+                                                    <Value>Лаборатория производства полипропилена - ОТК</Value>
+                                                    <Style>
+                                                      <FontFamily>Times New Roman</FontFamily>
+                                                    </Style>
+                                                  </TextRun>
+                                                </TextRuns>
+                                                <Style />
+                                              </Paragraph>
+                                            </Paragraphs>
+                                            <rd:DefaultName>Textbox169</rd:DefaultName>
+                                            <Style>
+                                              <Border>
+                                                <Color>White</Color>
+                                                <Style>Solid</Style>
+                                              </Border>
+                                              <PaddingLeft>2pt</PaddingLeft>
+                                              <PaddingRight>2pt</PaddingRight>
+                                              <PaddingTop>2pt</PaddingTop>
+                                              <PaddingBottom>2pt</PaddingBottom>
+                                            </Style>
+                                          </Textbox>
+                                          <ColSpan>3</ColSpan>
+                                        </CellContents>
+                                      </TablixCell>
+                                      <TablixCell />
+                                      <TablixCell />
+                                    </TablixCells>
+                                  </TablixRow>
+                                </TablixRows>
+                              </TablixBody>
+                              <TablixColumnHierarchy>
+                                <TablixMembers>
+                                  <TablixMember />
+                                  <TablixMember />
+                                  <TablixMember />
+                                </TablixMembers>
+                              </TablixColumnHierarchy>
+                              <TablixRowHierarchy>
+                                <TablixMembers>
+                                  <TablixMember />
+                                  <TablixMember />
+                                </TablixMembers>
+                              </TablixRowHierarchy>
+                              <Top>1.14391cm</Top>
+                              <Left>0.42016cm</Left>
+                              <Height>1.2cm</Height>
+                              <Width>7.5cm</Width>
+                              <Style>
+                                <Border>
+                                  <Style>None</Style>
+                                </Border>
+                              </Style>
+                            </Tablix>
+                            <Tablix Name="Tablix10">
+                              <TablixBody>
+                                <TablixColumns>
+                                  <TablixColumn>
+                                    <Width>3cm</Width>
+                                  </TablixColumn>
+                                  <TablixColumn>
+                                    <Width>3cm</Width>
+                                  </TablixColumn>
+                                  <TablixColumn>
+                                    <Width>3cm</Width>
+                                  </TablixColumn>
+                                </TablixColumns>
+                                <TablixRows>
+                                  <TablixRow>
+                                    <Height>0.27368cm</Height>
+                                    <TablixCells>
+                                      <TablixCell>
+                                        <CellContents>
+                                          <Textbox Name="Textbox190">
+                                            <KeepTogether>true</KeepTogether>
+                                            <Paragraphs>
+                                              <Paragraph>
+                                                <TextRuns>
+                                                  <TextRun>
+                                                    <Value />
+                                                    <Style>
+                                                      <FontFamily>Times New Roman</FontFamily>
+                                                    </Style>
+                                                  </TextRun>
+                                                </TextRuns>
+                                                <Style>
+                                                  <TextAlign>Center</TextAlign>
+                                                </Style>
+                                              </Paragraph>
+                                            </Paragraphs>
+                                            <rd:DefaultName>Textbox190</rd:DefaultName>
+                                            <Style>
+                                              <Border>
+                                                <Color>White</Color>
+                                                <Style>Solid</Style>
+                                              </Border>
+                                              <PaddingLeft>2pt</PaddingLeft>
+                                              <PaddingRight>2pt</PaddingRight>
+                                              <PaddingTop>2pt</PaddingTop>
+                                              <PaddingBottom>2pt</PaddingBottom>
+                                            </Style>
+                                          </Textbox>
+                                        </CellContents>
+                                      </TablixCell>
+                                      <TablixCell>
+                                        <CellContents>
+                                          <Textbox Name="Textbox191">
+                                            <KeepTogether>true</KeepTogether>
+                                            <Paragraphs>
+                                              <Paragraph>
+                                                <TextRuns>
+                                                  <TextRun>
+                                                    <Value />
+                                                    <Style>
+                                                      <FontFamily>Times New Roman</FontFamily>
+                                                    </Style>
+                                                  </TextRun>
+                                                </TextRuns>
+                                                <Style>
+                                                  <TextAlign>Center</TextAlign>
+                                                </Style>
+                                              </Paragraph>
+                                            </Paragraphs>
+                                            <rd:DefaultName>Textbox191</rd:DefaultName>
+                                            <Style>
+                                              <Border>
+                                                <Color>White</Color>
+                                                <Style>Solid</Style>
+                                              </Border>
+                                              <PaddingLeft>2pt</PaddingLeft>
+                                              <PaddingRight>2pt</PaddingRight>
+                                              <PaddingTop>2pt</PaddingTop>
+                                              <PaddingBottom>2pt</PaddingBottom>
+                                            </Style>
+                                          </Textbox>
+                                        </CellContents>
+                                      </TablixCell>
+                                      <TablixCell>
+                                        <CellContents>
+                                          <Textbox Name="Textbox219">
+                                            <KeepTogether>true</KeepTogether>
+                                            <Paragraphs>
+                                              <Paragraph>
+                                                <TextRuns>
+                                                  <TextRun>
+                                                    <Value />
+                                                    <Style>
+                                                      <FontFamily>Times New Roman</FontFamily>
+                                                    </Style>
+                                                  </TextRun>
+                                                </TextRuns>
+                                                <Style>
+                                                  <TextAlign>Center</TextAlign>
+                                                </Style>
+                                              </Paragraph>
+                                            </Paragraphs>
+                                            <rd:DefaultName>Textbox219</rd:DefaultName>
+                                            <Style>
+                                              <Border>
+                                                <Color>White</Color>
+                                                <Style>Solid</Style>
+                                              </Border>
+                                              <PaddingLeft>2pt</PaddingLeft>
+                                              <PaddingRight>2pt</PaddingRight>
+                                              <PaddingTop>2pt</PaddingTop>
+                                              <PaddingBottom>2pt</PaddingBottom>
+                                            </Style>
+                                          </Textbox>
+                                        </CellContents>
+                                      </TablixCell>
+                                    </TablixCells>
+                                  </TablixRow>
+                                </TablixRows>
+                              </TablixBody>
+                              <TablixColumnHierarchy>
+                                <TablixMembers>
+                                  <TablixMember>
+                                    <Group Name="SHEET_NAME">
+                                      <GroupExpressions>
+                                        <GroupExpression>=Fields!SHEET_NAME.Value</GroupExpression>
+                                      </GroupExpressions>
+                                    </Group>
+                                    <SortExpressions>
+                                      <SortExpression>
+                                        <Value>=Fields!SHEET_NAME.Value</Value>
+                                      </SortExpression>
+                                    </SortExpressions>
+                                    <TablixHeader>
+                                      <Size>0.6cm</Size>
+                                      <CellContents>
+                                        <Textbox Name="IN_REPORT_SHEET_NAME">
+                                          <KeepTogether>true</KeepTogether>
+                                          <Paragraphs>
+                                            <Paragraph>
+                                              <TextRuns>
+                                                <TextRun>
+                                                  <Value>=Fields!IN_REPORT_SHEET_NAME.Value</Value>
+                                                  <Style>
+                                                    <FontFamily>Times New Roman</FontFamily>
+                                                  </Style>
+                                                </TextRun>
+                                              </TextRuns>
+                                              <Style>
+                                                <TextAlign>Center</TextAlign>
+                                              </Style>
+                                            </Paragraph>
+                                          </Paragraphs>
+                                          <rd:DefaultName>IN_REPORT_SHEET_NAME</rd:DefaultName>
+                                          <Style>
+                                            <Border>
+                                              <Color>White</Color>
+                                              <Style>Solid</Style>
+                                            </Border>
+                                            <PaddingLeft>2pt</PaddingLeft>
+                                            <PaddingRight>2pt</PaddingRight>
+                                            <PaddingTop>2pt</PaddingTop>
+                                            <PaddingBottom>2pt</PaddingBottom>
+                                          </Style>
+                                        </Textbox>
+                                      </CellContents>
+                                    </TablixHeader>
+                                    <TablixMembers>
+                                      <TablixMember>
+                                        <TablixHeader>
+                                          <Size>0.49417cm</Size>
+                                          <CellContents>
+                                            <Textbox Name="Textbox186">
+                                              <KeepTogether>true</KeepTogether>
+                                              <Paragraphs>
+                                                <Paragraph>
+                                                  <TextRuns>
+                                                    <TextRun>
+                                                      <Value>="за период " + Parameters!dateStart.Value + " - " + Parameters!dateEnd.Value</Value>
+                                                      <Style>
+                                                        <FontFamily>Times New Roman</FontFamily>
+                                                      </Style>
+                                                    </TextRun>
+                                                  </TextRuns>
+                                                  <Style>
+                                                    <TextAlign>Center</TextAlign>
+                                                  </Style>
+                                                </Paragraph>
+                                              </Paragraphs>
+                                              <rd:DefaultName>Textbox186</rd:DefaultName>
+                                              <Style>
+                                                <Border>
+                                                  <Color>White</Color>
+                                                  <Style>Solid</Style>
+                                                </Border>
+                                                <PaddingLeft>2pt</PaddingLeft>
+                                                <PaddingRight>2pt</PaddingRight>
+                                                <PaddingTop>2pt</PaddingTop>
+                                                <PaddingBottom>2pt</PaddingBottom>
+                                              </Style>
+                                            </Textbox>
+                                          </CellContents>
+                                        </TablixHeader>
+                                        <TablixMembers>
+                                          <TablixMember>
+                                            <Group Name="ROWN_1">
+                                              <GroupExpressions>
+                                                <GroupExpression>=Fields!ROWN.Value</GroupExpression>
+                                              </GroupExpressions>
+                                            </Group>
+                                            <SortExpressions>
+                                              <SortExpression>
+                                                <Value>12</Value>
+                                              </SortExpression>
+                                            </SortExpressions>
+                                            <TablixHeader>
+                                              <Size>0.39715cm</Size>
+                                              <CellContents>
+                                                <Textbox Name="Textbox188">
+                                                  <KeepTogether>true</KeepTogether>
+                                                  <Paragraphs>
+                                                    <Paragraph>
+                                                      <TextRuns>
+                                                        <TextRun>
+                                                          <Value />
+                                                          <Style>
+                                                            <FontFamily>Times New Roman</FontFamily>
+                                                          </Style>
+                                                        </TextRun>
+                                                      </TextRuns>
+                                                      <Style>
+                                                        <TextAlign>Center</TextAlign>
+                                                      </Style>
+                                                    </Paragraph>
+                                                  </Paragraphs>
+                                                  <rd:DefaultName>Textbox188</rd:DefaultName>
+                                                  <Style>
+                                                    <Border>
+                                                      <Color>White</Color>
+                                                      <Style>Solid</Style>
+                                                    </Border>
+                                                    <PaddingLeft>2pt</PaddingLeft>
+                                                    <PaddingRight>2pt</PaddingRight>
+                                                    <PaddingTop>2pt</PaddingTop>
+                                                    <PaddingBottom>2pt</PaddingBottom>
+                                                  </Style>
+                                                </Textbox>
+                                              </CellContents>
+                                            </TablixHeader>
+                                          </TablixMember>
+                                          <TablixMember>
+                                            <Group Name="SORTER1">
+                                              <GroupExpressions>
+                                                <GroupExpression>=Fields!SORTER.Value</GroupExpression>
+                                              </GroupExpressions>
+                                            </Group>
+                                            <SortExpressions>
+                                              <SortExpression>
+                                                <Value>23</Value>
+                                              </SortExpression>
+                                            </SortExpressions>
+                                            <TablixHeader>
+                                              <Size>0.39715cm</Size>
+                                              <CellContents>
+                                                <Textbox Name="Textbox189">
+                                                  <KeepTogether>true</KeepTogether>
+                                                  <Paragraphs>
+                                                    <Paragraph>
+                                                      <TextRuns>
+                                                        <TextRun>
+                                                          <Value />
+                                                          <Style>
+                                                            <FontFamily>Times New Roman</FontFamily>
+                                                          </Style>
+                                                        </TextRun>
+                                                      </TextRuns>
+                                                      <Style>
+                                                        <TextAlign>Center</TextAlign>
+                                                      </Style>
+                                                    </Paragraph>
+                                                  </Paragraphs>
+                                                  <rd:DefaultName>Textbox189</rd:DefaultName>
+                                                  <Style>
+                                                    <Border>
+                                                      <Color>White</Color>
+                                                      <Style>Solid</Style>
+                                                    </Border>
+                                                    <PaddingLeft>2pt</PaddingLeft>
+                                                    <PaddingRight>2pt</PaddingRight>
+                                                    <PaddingTop>2pt</PaddingTop>
+                                                    <PaddingBottom>2pt</PaddingBottom>
+                                                  </Style>
+                                                </Textbox>
+                                              </CellContents>
+                                            </TablixHeader>
+                                            <Visibility>
+                                              <Hidden>=iif(Fields!SORTER.Value &lt; (Fields!MAX_SORT.Value-1), false, true)</Hidden>
+                                            </Visibility>
+                                          </TablixMember>
+                                          <TablixMember>
+                                            <Group Name="ROWN_2">
+                                              <GroupExpressions>
+                                                <GroupExpression>=Fields!ROWN.Value</GroupExpression>
+                                              </GroupExpressions>
+                                            </Group>
+                                            <SortExpressions>
+                                              <SortExpression>
+                                                <Value>12</Value>
+                                              </SortExpression>
+                                            </SortExpressions>
+                                            <TablixHeader>
+                                              <Size>0.39715cm</Size>
+                                              <CellContents>
+                                                <Textbox Name="Textbox224">
+                                                  <KeepTogether>true</KeepTogether>
+                                                  <Paragraphs>
+                                                    <Paragraph>
+                                                      <TextRuns>
+                                                        <TextRun>
+                                                          <Value />
+                                                          <Style>
+                                                            <FontFamily>Times New Roman</FontFamily>
+                                                          </Style>
+                                                        </TextRun>
+                                                      </TextRuns>
+                                                      <Style>
+                                                        <TextAlign>Center</TextAlign>
+                                                      </Style>
+                                                    </Paragraph>
+                                                  </Paragraphs>
+                                                  <rd:DefaultName>Textbox224</rd:DefaultName>
+                                                  <Style>
+                                                    <Border>
+                                                      <Color>White</Color>
+                                                      <Style>Solid</Style>
+                                                    </Border>
+                                                    <PaddingLeft>2pt</PaddingLeft>
+                                                    <PaddingRight>2pt</PaddingRight>
+                                                    <PaddingTop>2pt</PaddingTop>
+                                                    <PaddingBottom>2pt</PaddingBottom>
+                                                  </Style>
+                                                </Textbox>
+                                              </CellContents>
+                                            </TablixHeader>
+                                          </TablixMember>
+                                        </TablixMembers>
+                                      </TablixMember>
+                                    </TablixMembers>
+                                  </TablixMember>
+                                </TablixMembers>
+                              </TablixColumnHierarchy>
+                              <TablixRowHierarchy>
+                                <TablixMembers>
+                                  <TablixMember />
+                                </TablixMembers>
+                              </TablixRowHierarchy>
+                              <DataSetName>DS_DATA</DataSetName>
+                              <Top>2.96016cm</Top>
+                              <Left>0.42016cm</Left>
+                              <Height>1.765cm</Height>
+                              <Width>9cm</Width>
+                              <ZIndex>1</ZIndex>
+                              <Style>
+                                <Border>
+                                  <Style>None</Style>
+                                </Border>
+                              </Style>
+                            </Tablix>
+                            <Tablix Name="Tablix12">
+                              <TablixBody>
+                                <TablixColumns>
+                                  <TablixColumn>
+                                    <Width>3.29104cm</Width>
+                                  </TablixColumn>
+                                </TablixColumns>
+                                <TablixRows>
+                                  <TablixRow>
+                                    <Height>0.6cm</Height>
+                                    <TablixCells>
+                                      <TablixCell>
+                                        <CellContents>
+                                          <Textbox Name="FINAL1">
+                                            <CanGrow>true</CanGrow>
+                                            <KeepTogether>true</KeepTogether>
+                                            <Paragraphs>
+                                              <Paragraph>
+                                                <TextRuns>
+                                                  <TextRun>
+                                                    <Value>=iif(isNothing(iif(Fields!COLUMN_TITLE.Value="Дата и время отбора",Fields!DATE_TIME_SELECT.Value,Fields!FINAL.Value)),"-", iif(Fields!COLUMN_TITLE.Value="Дата и время отбора",Fields!DATE_TIME_SELECT.Value,Fields!FINAL.Value))</Value>
+                                                    <Style>
+                                                      <FontFamily>Times New Roman</FontFamily>
+                                                      <Color>=iif(Fields!S.Value="1" and Fields!COLUMN_SUBTITLE_STATS.Value="Факт", "Red", "Black")</Color>
+                                                    </Style>
+                                                  </TextRun>
+                                                </TextRuns>
+                                                <Style>
+                                                  <TextAlign>Center</TextAlign>
+                                                </Style>
+                                              </Paragraph>
+                                            </Paragraphs>
+                                            <rd:DefaultName>FINAL1</rd:DefaultName>
+                                            <Style>
+                                              <Border>
+                                                <Style>Solid</Style>
+                                              </Border>
+                                              <PaddingLeft>2pt</PaddingLeft>
+                                              <PaddingRight>2pt</PaddingRight>
+                                              <PaddingTop>2pt</PaddingTop>
+                                              <PaddingBottom>2pt</PaddingBottom>
+                                            </Style>
+                                          </Textbox>
+                                        </CellContents>
+                                      </TablixCell>
+                                    </TablixCells>
+                                  </TablixRow>
+                                </TablixRows>
+                              </TablixBody>
+                              <TablixColumnHierarchy>
+                                <TablixMembers>
+                                  <TablixMember>
+                                    <Group Name="COLUMN_TITLE1">
+                                      <GroupExpressions>
+                                        <GroupExpression>=Fields!COLUMN_TITLE.Value</GroupExpression>
+                                      </GroupExpressions>
+                                    </Group>
+                                    <SortExpressions>
+                                      <SortExpression>
+                                        <Value>=Fields!SORTER.Value</Value>
+                                      </SortExpression>
+                                      <SortExpression>
+                                        <Value>=Fields!SPTESTSORTER.Value</Value>
+                                      </SortExpression>
+                                      <SortExpression>
+                                        <Value>=Fields!SPECSORTER.Value</Value>
+                                      </SortExpression>
+                                    </SortExpressions>
+                                    <TablixHeader>
+                                      <Size>0.6cm</Size>
+                                      <CellContents>
+                                        <Textbox Name="COLUMN_TITLE1">
+                                          <CanGrow>true</CanGrow>
+                                          <KeepTogether>true</KeepTogether>
+                                          <Paragraphs>
+                                            <Paragraph>
+                                              <TextRuns>
+                                                <TextRun>
+                                                  <Value>=Fields!COLUMN_TITLE.Value</Value>
+                                                  <Style>
+                                                    <FontFamily>Times New Roman</FontFamily>
+                                                  </Style>
+                                                </TextRun>
+                                              </TextRuns>
+                                              <Style>
+                                                <TextAlign>Center</TextAlign>
+                                              </Style>
+                                            </Paragraph>
+                                          </Paragraphs>
+                                          <rd:DefaultName>COLUMN_TITLE1</rd:DefaultName>
+                                          <Style>
+                                            <Border>
+                                              <Style>Solid</Style>
+                                            </Border>
+                                            <PaddingLeft>2pt</PaddingLeft>
+                                            <PaddingRight>2pt</PaddingRight>
+                                            <PaddingTop>2pt</PaddingTop>
+                                            <PaddingBottom>2pt</PaddingBottom>
+                                          </Style>
+                                        </Textbox>
+                                      </CellContents>
+                                    </TablixHeader>
+                                    <TablixMembers>
+                                      <TablixMember>
+                                        <Group Name="COLUMN_SUBTITLE">
+                                          <GroupExpressions>
+                                            <GroupExpression>=Fields!COLUMN_SUBTITLE.Value</GroupExpression>
+                                          </GroupExpressions>
+                                        </Group>
+                                        <SortExpressions>
+                                          <SortExpression>
+                                            <Value>=Fields!SPTESTSORTER.Value</Value>
+                                          </SortExpression>
+                                          <SortExpression>
+                                            <Value>=Fields!SPECSORTER.Value</Value>
+                                          </SortExpression>
+                                        </SortExpressions>
+                                        <TablixHeader>
+                                          <Size>0.6cm</Size>
+                                          <CellContents>
+                                            <Textbox Name="COLUMN_SUBTITLE">
+                                              <CanGrow>true</CanGrow>
+                                              <KeepTogether>true</KeepTogether>
+                                              <Paragraphs>
+                                                <Paragraph>
+                                                  <TextRuns>
+                                                    <TextRun>
+                                                      <Value>=Fields!COLUMN_SUBTITLE.Value</Value>
+                                                      <Style>
+                                                        <FontFamily>Times New Roman</FontFamily>
+                                                      </Style>
+                                                    </TextRun>
+                                                  </TextRuns>
+                                                  <Style>
+                                                    <TextAlign>Center</TextAlign>
+                                                  </Style>
+                                                </Paragraph>
+                                              </Paragraphs>
+                                              <rd:DefaultName>COLUMN_SUBTITLE</rd:DefaultName>
+                                              <Style>
+                                                <Border>
+                                                  <Style>Solid</Style>
+                                                </Border>
+                                                <PaddingLeft>2pt</PaddingLeft>
+                                                <PaddingRight>2pt</PaddingRight>
+                                                <PaddingTop>2pt</PaddingTop>
+                                                <PaddingBottom>2pt</PaddingBottom>
+                                              </Style>
+                                            </Textbox>
+                                          </CellContents>
+                                        </TablixHeader>
+                                        <TablixMembers>
+                                          <TablixMember />
+                                        </TablixMembers>
+                                      </TablixMember>
+                                    </TablixMembers>
+                                  </TablixMember>
+                                </TablixMembers>
+                              </TablixColumnHierarchy>
+                              <TablixRowHierarchy>
+                                <TablixMembers>
+                                  <TablixMember>
+                                    <Group Name="ORDNO">
+                                      <GroupExpressions>
+                                        <GroupExpression>=Fields!ORDNO.Value</GroupExpression>
+                                        <GroupExpression>=Fields!ROWN_D.Value</GroupExpression>
+                                      </GroupExpressions>
+                                    </Group>
+                                    <SortExpressions>
+                                      <SortExpression>
+                                        <Value>=Fields!DATE_TIME_SELECT.Value</Value>
+                                      </SortExpression>
+                                    </SortExpressions>
+                                  </TablixMember>
+                                </TablixMembers>
+                              </TablixRowHierarchy>
+                              <DataSetName>DS_DATA</DataSetName>
+                              <Top>4.9cm</Top>
+                              <Left>0.42016cm</Left>
+                              <Height>1.8cm</Height>
+                              <Width>3.29104cm</Width>
+                              <ZIndex>2</ZIndex>
+                              <Style>
+                                <Border>
+                                  <Style>Solid</Style>
+                                </Border>
+                                <TopBorder>
+                                  <Color>Black</Color>
+                                  <Style>Solid</Style>
+                                  <Width>1pt</Width>
+                                </TopBorder>
+                                <BottomBorder>
+                                  <Color>Black</Color>
+                                  <Style>Solid</Style>
+                                  <Width>1pt</Width>
+                                </BottomBorder>
+                                <LeftBorder>
+                                  <Color>Black</Color>
+                                  <Style>Solid</Style>
+                                  <Width>1pt</Width>
+                                </LeftBorder>
+                                <RightBorder>
+                                  <Color>Black</Color>
+                                  <Style>Solid</Style>
+                                  <Width>1pt</Width>
+                                </RightBorder>
+                              </Style>
+                            </Tablix>
+                            <Tablix Name="Tablix4">
+                              <TablixBody>
+                                <TablixColumns>
+                                  <TablixColumn>
+                                    <Width>6cm</Width>
+                                  </TablixColumn>
+                                  <TablixColumn>
+                                    <Width>3cm</Width>
+                                  </TablixColumn>
+                                </TablixColumns>
+                                <TablixRows>
+                                  <TablixRow>
+                                    <Height>0.17667cm</Height>
+                                    <TablixCells>
+                                      <TablixCell>
+                                        <CellContents>
+                                          <Textbox Name="Textbox21">
+                                            <CanGrow>true</CanGrow>
+                                            <KeepTogether>true</KeepTogether>
+                                            <Paragraphs>
+                                              <Paragraph>
+                                                <TextRuns>
+                                                  <TextRun>
+                                                    <Value />
+                                                    <Style>
+                                                      <FontFamily>Times New Roman</FontFamily>
+                                                    </Style>
+                                                  </TextRun>
+                                                </TextRuns>
+                                                <Style />
+                                              </Paragraph>
+                                            </Paragraphs>
+                                            <rd:DefaultName>Textbox21</rd:DefaultName>
+                                            <Style>
+                                              <Border>
+                                                <Color>White</Color>
+                                                <Style>Solid</Style>
+                                              </Border>
+                                              <PaddingLeft>2pt</PaddingLeft>
+                                              <PaddingRight>2pt</PaddingRight>
+                                              <PaddingTop>2pt</PaddingTop>
+                                              <PaddingBottom>2pt</PaddingBottom>
+                                            </Style>
+                                          </Textbox>
+                                        </CellContents>
+                                      </TablixCell>
+                                      <TablixCell>
+                                        <CellContents>
+                                          <Textbox Name="Textbox29">
+                                            <CanGrow>true</CanGrow>
+                                            <KeepTogether>true</KeepTogether>
+                                            <Paragraphs>
+                                              <Paragraph>
+                                                <TextRuns>
+                                                  <TextRun>
+                                                    <Value />
+                                                    <Style>
+                                                      <FontFamily>Times New Roman</FontFamily>
+                                                    </Style>
+                                                  </TextRun>
+                                                </TextRuns>
+                                                <Style />
+                                              </Paragraph>
+                                            </Paragraphs>
+                                            <rd:DefaultName>Textbox29</rd:DefaultName>
+                                            <Style>
+                                              <Border>
+                                                <Color>White</Color>
+                                                <Style>Solid</Style>
+                                              </Border>
+                                              <PaddingLeft>2pt</PaddingLeft>
+                                              <PaddingRight>2pt</PaddingRight>
+                                              <PaddingTop>2pt</PaddingTop>
+                                              <PaddingBottom>2pt</PaddingBottom>
+                                            </Style>
+                                          </Textbox>
+                                        </CellContents>
+                                      </TablixCell>
+                                    </TablixCells>
+                                  </TablixRow>
+                                </TablixRows>
+                              </TablixBody>
+                              <TablixColumnHierarchy>
+                                <TablixMembers>
+                                  <TablixMember>
+                                    <Group Name="ROWN">
+                                      <GroupExpressions>
+                                        <GroupExpression>=Fields!ROWN.Value</GroupExpression>
+                                      </GroupExpressions>
+                                    </Group>
+                                    <SortExpressions>
+                                      <SortExpression>
+                                        <Value>=Fields!ROWN.Value</Value>
+                                      </SortExpression>
+                                    </SortExpressions>
+                                    <TablixHeader>
+                                      <Size>0.6cm</Size>
+                                      <CellContents>
+                                        <Textbox Name="Textbox20">
+                                          <CanGrow>true</CanGrow>
+                                          <KeepTogether>true</KeepTogether>
+                                          <Paragraphs>
+                                            <Paragraph>
+                                              <TextRuns>
+                                                <TextRun>
+                                                  <Value>=iif(Fields!ROWN.Value=Fields!MIN_SORT.Value, Fields!HEAD_TITLE.Value, "")</Value>
+                                                  <Style>
+                                                    <FontFamily>Times New Roman</FontFamily>
+                                                  </Style>
+                                                </TextRun>
+                                              </TextRuns>
+                                              <Style />
+                                            </Paragraph>
+                                          </Paragraphs>
+                                          <rd:DefaultName>Textbox20</rd:DefaultName>
+                                          <Style>
+                                            <Border>
+                                              <Color>White</Color>
+                                              <Style>Solid</Style>
+                                            </Border>
+                                            <PaddingLeft>2pt</PaddingLeft>
+                                            <PaddingRight>2pt</PaddingRight>
+                                            <PaddingTop>2pt</PaddingTop>
+                                            <PaddingBottom>2pt</PaddingBottom>
+                                          </Style>
+                                        </Textbox>
+                                      </CellContents>
+                                    </TablixHeader>
+                                  </TablixMember>
+                                  <TablixMember>
+                                    <Group Name="SORTER">
+                                      <GroupExpressions>
+                                        <GroupExpression>=Fields!SORTER.Value</GroupExpression>
+                                      </GroupExpressions>
+                                    </Group>
+                                    <SortExpressions>
+                                      <SortExpression>
+                                        <Value>=Fields!SORTER.Value</Value>
+                                      </SortExpression>
+                                    </SortExpressions>
+                                    <TablixHeader>
+                                      <Size>0.6cm</Size>
+                                      <CellContents>
+                                        <Textbox Name="Group7">
+                                          <CanGrow>true</CanGrow>
+                                          <KeepTogether>true</KeepTogether>
+                                          <Paragraphs>
+                                            <Paragraph>
+                                              <TextRuns>
+                                                <TextRun>
+                                                  <Value>=iif(Fields!SORTER.Value=(Fields!MAX_SORT.Value-2),"Запись по качеству","")</Value>
+                                                  <Style>
+                                                    <FontFamily>Times New Roman</FontFamily>
+                                                  </Style>
+                                                </TextRun>
+                                              </TextRuns>
+                                              <Style />
+                                            </Paragraph>
+                                          </Paragraphs>
+                                          <rd:DefaultName>Group7</rd:DefaultName>
+                                          <Style>
+                                            <Border>
+                                              <Color>White</Color>
+                                              <Style>Solid</Style>
+                                            </Border>
+                                            <PaddingLeft>2pt</PaddingLeft>
+                                            <PaddingRight>2pt</PaddingRight>
+                                            <PaddingTop>2pt</PaddingTop>
+                                            <PaddingBottom>2pt</PaddingBottom>
+                                          </Style>
+                                        </Textbox>
+                                      </CellContents>
+                                    </TablixHeader>
+                                    <Visibility>
+                                      <Hidden>=iif(Fields!SORTER.Value &lt; (Fields!MAX_SORT.Value-1), false, true)</Hidden>
+                                    </Visibility>
+                                  </TablixMember>
+                                </TablixMembers>
+                              </TablixColumnHierarchy>
+                              <TablixRowHierarchy>
+                                <TablixMembers>
+                                  <TablixMember />
+                                </TablixMembers>
+                              </TablixRowHierarchy>
+                              <DataSetName>DS_DATA</DataSetName>
+                              <Top>0.26141cm</Top>
+                              <Left>0.42016cm</Left>
+                              <Height>0.77667cm</Height>
+                              <Width>9cm</Width>
+                              <ZIndex>3</ZIndex>
+                              <Style>
+                                <Border>
+                                  <Style>None</Style>
+                                </Border>
+                              </Style>
+                            </Tablix>
+                            <Tablix Name="Tablix2">
+                              <TablixBody>
+                                <TablixColumns>
+                                  <TablixColumn>
+                                    <Width>3.29104cm</Width>
+                                  </TablixColumn>
+                                </TablixColumns>
+                                <TablixRows>
+                                  <TablixRow>
+                                    <Height>0.07938cm</Height>
+                                    <TablixCells>
+                                      <TablixCell>
+                                        <CellContents>
+                                          <Textbox Name="Textbox34">
+                                            <CanGrow>true</CanGrow>
+                                            <KeepTogether>true</KeepTogether>
+                                            <Paragraphs>
+                                              <Paragraph>
+                                                <TextRuns>
+                                                  <TextRun>
+                                                    <Value />
+                                                    <Style />
+                                                  </TextRun>
+                                                </TextRuns>
+                                                <Style />
+                                              </Paragraph>
+                                            </Paragraphs>
+                                            <rd:DefaultName>Textbox34</rd:DefaultName>
+                                            <Style>
+                                              <Border>
+                                                <Color>White</Color>
+                                                <Style>Solid</Style>
+                                              </Border>
+                                              <PaddingLeft>2pt</PaddingLeft>
+                                              <PaddingRight>2pt</PaddingRight>
+                                              <PaddingTop>2pt</PaddingTop>
+                                              <PaddingBottom>2pt</PaddingBottom>
+                                            </Style>
+                                          </Textbox>
+                                        </CellContents>
+                                      </TablixCell>
+                                    </TablixCells>
+                                  </TablixRow>
+                                </TablixRows>
+                              </TablixBody>
+                              <TablixColumnHierarchy>
+                                <TablixMembers>
+                                  <TablixMember>
+                                    <Group Name="COLUMN_TITLE_STATS">
+                                      <GroupExpressions>
+                                        <GroupExpression>=Fields!COLUMN_TITLE_STATS.Value</GroupExpression>
+                                      </GroupExpressions>
+                                    </Group>
+                                    <SortExpressions>
+                                      <SortExpression>
+                                        <Value>=Fields!SORTER.Value</Value>
+                                      </SortExpression>
+                                      <SortExpression>
+                                        <Value>=Fields!SPTESTSORTER.Value</Value>
+                                      </SortExpression>
+                                      <SortExpression>
+                                        <Value>=Fields!SPECSORTER.Value</Value>
+                                      </SortExpression>
+                                    </SortExpressions>
+                                    <TablixMembers>
+                                      <TablixMember>
+                                        <TablixHeader>
+                                          <Size>1cm</Size>
+                                          <CellContents>
+                                            <Textbox Name="MIN_ZN">
+                                              <KeepTogether>true</KeepTogether>
+                                              <Paragraphs>
+                                                <Paragraph>
+                                                  <TextRuns>
+                                                    <TextRun>
+                                                      <Value>=iif(Fields!COLUMN_SUBTITLE_STATS.Value="Норма" or Fields!COLUMN_SUBTITLE_STATS.Value="Факт", 
+     iif(IsNothing(Fields!MIN_ZN.Value), "-", Fields!MIN_ZN.Value),
+     iif(Fields!SORTER.Value&lt;=Fields!NORM_SORTER.Value,
+         "Минимальное значение",
+         ""))</Value>
+                                                      <Style>
+                                                        <FontFamily>Times New Roman</FontFamily>
+                                                      </Style>
+                                                    </TextRun>
+                                                  </TextRuns>
+                                                  <Style>
+                                                    <TextAlign>=iif(Fields!SORTER.Value&lt;=Fields!NORM_SORTER.Value, "Right", "Center")</TextAlign>
+                                                  </Style>
+                                                </Paragraph>
+                                              </Paragraphs>
+                                              <rd:DefaultName>MIN_ZN</rd:DefaultName>
+                                              <Style>
+                                                <Border>
+                                                  <Style>Solid</Style>
+                                                </Border>
+                                                <VerticalAlign>Middle</VerticalAlign>
+                                                <PaddingLeft>2pt</PaddingLeft>
+                                                <PaddingRight>2pt</PaddingRight>
+                                                <PaddingTop>2pt</PaddingTop>
+                                                <PaddingBottom>2pt</PaddingBottom>
+                                              </Style>
+                                            </Textbox>
+                                          </CellContents>
+                                        </TablixHeader>
+                                        <TablixMembers>
+                                          <TablixMember>
+                                            <TablixHeader>
+                                              <Size>1cm</Size>
+                                              <CellContents>
+                                                <Textbox Name="Textbox27">
+                                                  <KeepTogether>true</KeepTogether>
+                                                  <Paragraphs>
+                                                    <Paragraph>
+                                                      <TextRuns>
+                                                        <TextRun>
+                                                          <Value>=iif(Fields!COLUMN_SUBTITLE_STATS.Value="Норма" or Fields!COLUMN_SUBTITLE_STATS.Value="Факт", 
+     iif(IsNothing(Fields!MAX_ZN.Value), "-", Fields!MAX_ZN.Value), 
+     iif(Fields!SORTER.Value&lt;=Fields!NORM_SORTER.Value,"Максимальное значение",""))</Value>
+                                                          <Style>
+                                                            <FontFamily>Times New Roman</FontFamily>
+                                                          </Style>
+                                                        </TextRun>
+                                                      </TextRuns>
+                                                      <Style>
+                                                        <TextAlign>=iif(Fields!SORTER.Value&lt;=Fields!NORM_SORTER.Value, "Right", "Center")</TextAlign>
+                                                      </Style>
+                                                    </Paragraph>
+                                                  </Paragraphs>
+                                                  <rd:DefaultName>Textbox27</rd:DefaultName>
+                                                  <Style>
+                                                    <Border>
+                                                      <Style>Solid</Style>
+                                                    </Border>
+                                                    <VerticalAlign>Middle</VerticalAlign>
+                                                    <PaddingLeft>2pt</PaddingLeft>
+                                                    <PaddingRight>2pt</PaddingRight>
+                                                    <PaddingTop>2pt</PaddingTop>
+                                                    <PaddingBottom>2pt</PaddingBottom>
+                                                  </Style>
+                                                </Textbox>
+                                              </CellContents>
+                                            </TablixHeader>
+                                            <TablixMembers>
+                                              <TablixMember>
+                                                <TablixHeader>
+                                                  <Size>1cm</Size>
+                                                  <CellContents>
+                                                    <Textbox Name="Textbox25">
+                                                      <KeepTogether>true</KeepTogether>
+                                                      <Paragraphs>
+                                                        <Paragraph>
+                                                          <TextRuns>
+                                                            <TextRun>
+                                                              <Value>=iif(Fields!COLUMN_SUBTITLE_STATS.Value="Норма" or Fields!COLUMN_SUBTITLE_STATS.Value="Факт", 
+     iif(IsNothing(Fields!AVG_ZN.Value), "-", Fields!AVG_ZN.Value), 
+     iif(Fields!SORTER.Value&lt;=Fields!NORM_SORTER.Value,"Среднее значение",""))</Value>
+                                                              <Style>
+                                                                <FontFamily>Times New Roman</FontFamily>
+                                                              </Style>
+                                                            </TextRun>
+                                                          </TextRuns>
+                                                          <Style>
+                                                            <TextAlign>=iif(Fields!SORTER.Value&lt;=Fields!NORM_SORTER.Value, "Right", "Center")</TextAlign>
+                                                          </Style>
+                                                        </Paragraph>
+                                                      </Paragraphs>
+                                                      <rd:DefaultName>Textbox25</rd:DefaultName>
+                                                      <Style>
+                                                        <Border>
+                                                          <Style>Solid</Style>
+                                                        </Border>
+                                                        <VerticalAlign>Middle</VerticalAlign>
+                                                        <PaddingLeft>2pt</PaddingLeft>
+                                                        <PaddingRight>2pt</PaddingRight>
+                                                        <PaddingTop>2pt</PaddingTop>
+                                                        <PaddingBottom>2pt</PaddingBottom>
+                                                      </Style>
+                                                    </Textbox>
+                                                  </CellContents>
+                                                </TablixHeader>
+                                                <TablixMembers>
+                                                  <TablixMember>
+                                                    <TablixHeader>
+                                                      <Size>1cm</Size>
+                                                      <CellContents>
+                                                        <Textbox Name="Textbox10">
+                                                          <KeepTogether>true</KeepTogether>
+                                                          <Paragraphs>
+                                                            <Paragraph>
+                                                              <TextRuns>
+                                                                <TextRun>
+                                                                  <Value>=iif(Fields!COLUMN_SUBTITLE_STATS.Value="Норма" or Fields!COLUMN_SUBTITLE_STATS.Value="Факт", 
+     iif(IsNothing(Fields!COUNT_ED.Value), "-", Fields!COUNT_ED.Value), 
+     iif(Fields!SORTER.Value&lt;=Fields!NORM_SORTER.Value,"Количество замеров, шт.",""))</Value>
+                                                                  <Style>
+                                                                    <FontFamily>Times New Roman</FontFamily>
+                                                                  </Style>
+                                                                </TextRun>
+                                                              </TextRuns>
+                                                              <Style>
+                                                                <TextAlign>=iif(Fields!SORTER.Value&lt;=Fields!NORM_SORTER.Value, "Right", "Center")</TextAlign>
+                                                              </Style>
+                                                            </Paragraph>
+                                                          </Paragraphs>
+                                                          <rd:DefaultName>Textbox10</rd:DefaultName>
+                                                          <Style>
+                                                            <Border>
+                                                              <Style>Solid</Style>
+                                                            </Border>
+                                                            <VerticalAlign>Middle</VerticalAlign>
+                                                            <PaddingLeft>2pt</PaddingLeft>
+                                                            <PaddingRight>2pt</PaddingRight>
+                                                            <PaddingTop>2pt</PaddingTop>
+                                                            <PaddingBottom>2pt</PaddingBottom>
+                                                          </Style>
+                                                        </Textbox>
+                                                      </CellContents>
+                                                    </TablixHeader>
+                                                    <TablixMembers>
+                                                      <TablixMember>
+                                                        <TablixHeader>
+                                                          <Size>1cm</Size>
+                                                          <CellContents>
+                                                            <Textbox Name="Textbox8">
+                                                              <KeepTogether>true</KeepTogether>
+                                                              <Paragraphs>
+                                                                <Paragraph>
+                                                                  <TextRuns>
+                                                                    <TextRun>
+                                                                      <Value>=iif(Fields!COLUMN_SUBTITLE_STATS.Value="Норма" or Fields!COLUMN_SUBTITLE_STATS.Value="Факт", 
+     iif(IsNothing(Fields!OOS_ED.Value), "-", Fields!OOS_ED.Value), 
+     iif(Fields!SORTER.Value&lt;=Fields!NORM_SORTER.Value,"Количество несоответствий, шт.",""))</Value>
+                                                                      <Style>
+                                                                        <FontFamily>Times New Roman</FontFamily>
+                                                                      </Style>
+                                                                    </TextRun>
+                                                                  </TextRuns>
+                                                                  <Style>
+                                                                    <TextAlign>=iif(Fields!SORTER.Value&lt;=Fields!NORM_SORTER.Value, "Right", "Center")</TextAlign>
+                                                                  </Style>
+                                                                </Paragraph>
+                                                              </Paragraphs>
+                                                              <rd:DefaultName>Textbox8</rd:DefaultName>
+                                                              <Style>
+                                                                <Border>
+                                                                  <Style>Solid</Style>
+                                                                </Border>
+                                                                <VerticalAlign>Middle</VerticalAlign>
+                                                                <PaddingLeft>2pt</PaddingLeft>
+                                                                <PaddingRight>2pt</PaddingRight>
+                                                                <PaddingTop>2pt</PaddingTop>
+                                                                <PaddingBottom>2pt</PaddingBottom>
+                                                              </Style>
+                                                            </Textbox>
+                                                          </CellContents>
+                                                        </TablixHeader>
+                                                        <TablixMembers>
+                                                          <TablixMember>
+                                                            <TablixHeader>
+                                                              <Size>1cm</Size>
+                                                              <CellContents>
+                                                                <Textbox Name="Textbox31">
+                                                                  <KeepTogether>true</KeepTogether>
+                                                                  <Paragraphs>
+                                                                    <Paragraph>
+                                                                      <TextRuns>
+                                                                        <TextRun>
+                                                                          <Value>=iif(Fields!COLUMN_SUBTITLE_STATS.Value="Норма" or Fields!COLUMN_SUBTITLE_STATS.Value="Факт", 
+     iif(IsNothing(Fields!OOS_PROC.Value), "-", Fields!OOS_PROC.Value), 
+     iif(Fields!SORTER.Value&lt;=Fields!NORM_SORTER.Value,"Количество несоответствий, %",""))</Value>
+                                                                          <Style>
+                                                                            <FontFamily>Times New Roman</FontFamily>
+                                                                          </Style>
+                                                                        </TextRun>
+                                                                      </TextRuns>
+                                                                      <Style>
+                                                                        <TextAlign>=iif(Fields!SORTER.Value&lt;=Fields!NORM_SORTER.Value, "Right", "Center")</TextAlign>
+                                                                      </Style>
+                                                                    </Paragraph>
+                                                                  </Paragraphs>
+                                                                  <rd:DefaultName>Textbox31</rd:DefaultName>
+                                                                  <Style>
+                                                                    <Border>
+                                                                      <Style>Solid</Style>
+                                                                    </Border>
+                                                                    <VerticalAlign>Middle</VerticalAlign>
+                                                                    <PaddingLeft>2pt</PaddingLeft>
+                                                                    <PaddingRight>2pt</PaddingRight>
+                                                                    <PaddingTop>2pt</PaddingTop>
+                                                                    <PaddingBottom>2pt</PaddingBottom>
+                                                                  </Style>
+                                                                </Textbox>
+                                                              </CellContents>
+                                                            </TablixHeader>
+                                                            <TablixMembers>
+                                                              <TablixMember>
+                                                                <Group Name="COLUMN_SUBTITLE_STATS">
+                                                                  <GroupExpressions>
+                                                                    <GroupExpression>=Fields!COLUMN_SUBTITLE_STATS.Value</GroupExpression>
+                                                                  </GroupExpressions>
+                                                                </Group>
+                                                                <SortExpressions>
+                                                                  <SortExpression>
+                                                                    <Value>=Fields!SPTESTSORTER.Value</Value>
+                                                                  </SortExpression>
+                                                                  <SortExpression>
+                                                                    <Value>=Fields!SPECSORTER.Value</Value>
+                                                                  </SortExpression>
+                                                                </SortExpressions>
+                                                                <TablixHeader>
+                                                                  <Size>0.07938cm</Size>
+                                                                  <CellContents>
+                                                                    <Textbox Name="Textbox33">
+                                                                      <CanGrow>true</CanGrow>
+                                                                      <KeepTogether>true</KeepTogether>
+                                                                      <Paragraphs>
+                                                                        <Paragraph>
+                                                                          <TextRuns>
+                                                                            <TextRun>
+                                                                              <Value />
+                                                                              <Style />
+                                                                            </TextRun>
+                                                                          </TextRuns>
+                                                                          <Style />
+                                                                        </Paragraph>
+                                                                      </Paragraphs>
+                                                                      <rd:DefaultName>Textbox33</rd:DefaultName>
+                                                                      <Style>
+                                                                        <Border>
+                                                                          <Color>White</Color>
+                                                                          <Style>Solid</Style>
+                                                                        </Border>
+                                                                        <TopBorder>
+                                                                          <Color>Black</Color>
+                                                                        </TopBorder>
+                                                                        <PaddingLeft>2pt</PaddingLeft>
+                                                                        <PaddingRight>2pt</PaddingRight>
+                                                                        <PaddingTop>2pt</PaddingTop>
+                                                                        <PaddingBottom>2pt</PaddingBottom>
+                                                                      </Style>
+                                                                    </Textbox>
+                                                                  </CellContents>
+                                                                </TablixHeader>
+                                                              </TablixMember>
+                                                            </TablixMembers>
+                                                          </TablixMember>
+                                                        </TablixMembers>
+                                                      </TablixMember>
+                                                    </TablixMembers>
+                                                  </TablixMember>
+                                                </TablixMembers>
+                                              </TablixMember>
+                                            </TablixMembers>
+                                          </TablixMember>
+                                        </TablixMembers>
+                                      </TablixMember>
+                                    </TablixMembers>
+                                  </TablixMember>
+                                </TablixMembers>
+                              </TablixColumnHierarchy>
+                              <TablixRowHierarchy>
+                                <TablixMembers>
+                                  <TablixMember />
+                                </TablixMembers>
+                              </TablixRowHierarchy>
+                              <DataSetName>DS_DATA</DataSetName>
+                              <Top>6.7cm</Top>
+                              <Left>0.42016cm</Left>
+                              <Height>6.15876cm</Height>
+                              <Width>3.29104cm</Width>
+                              <ZIndex>4</ZIndex>
+                              <Style>
+                                <Border>
+                                  <Style>None</Style>
+                                </Border>
+                              </Style>
+                            </Tablix>
+                          </ReportItems>
+                          <PageBreak>
+                            <BreakLocation>End</BreakLocation>
+                          </PageBreak>
+                          <PageName>=Fields!IN_REPORT_SHEET_NAME.Value</PageName>
+                          <KeepTogether>true</KeepTogether>
+                          <Style>
+                            <Border>
+                              <Style>None</Style>
+                            </Border>
+                          </Style>
+                        </Rectangle>
+                      </CellContents>
+                    </TablixCell>
+                  </TablixCells>
+                </TablixRow>
+              </TablixRows>
+            </TablixBody>
+            <TablixColumnHierarchy>
+              <TablixMembers>
+                <TablixMember />
+              </TablixMembers>
+            </TablixColumnHierarchy>
+            <TablixRowHierarchy>
+              <TablixMembers>
+                <TablixMember>
+                  <Group Name="Details">
+                    <GroupExpressions>
+                      <GroupExpression>=Fields!SHEET_NAME.Value</GroupExpression>
+                    </GroupExpressions>
+                  </Group>
+                </TablixMember>
+              </TablixMembers>
+            </TablixRowHierarchy>
+            <DataSetName>DS_DATA</DataSetName>
+            <PageBreak>
+              <BreakLocation>Between</BreakLocation>
+            </PageBreak>
+            <Height>12.85876cm</Height>
+            <Width>10.30141cm</Width>
+            <Style>
+              <Border>
+                <Style>None</Style>
+              </Border>
+            </Style>
+          </Tablix>
+        </ReportItems>
+        <Height>12.85876cm</Height>
+        <Style />
+      </Body>
+      <Width>10.30141cm</Width>
+      <Page>
+        <PageHeight>21cm</PageHeight>
+        <PageWidth>29.7cm</PageWidth>
+        <InteractiveHeight>0in</InteractiveHeight>
+        <InteractiveWidth>8.5in</InteractiveWidth>
+        <LeftMargin>1.5cm</LeftMargin>
+        <RightMargin>1.5cm</RightMargin>
+        <TopMargin>1.5cm</TopMargin>
+        <BottomMargin>1.5cm</BottomMargin>
+        <ColumnSpacing>1.27cm</ColumnSpacing>
+        <Style />
+      </Page>
+    </ReportSection>
+  </ReportSections>
+  <ReportParameters>
+    <ReportParameter Name="dateStart">
+      <DataType>DateTime</DataType>
+      <DefaultValue>
+        <Values>
+          <Value>= DateAdd(DateInterval.Hour,8,DateAdd("d",+1-Day(Now()),DateAdd("d",0,DateValue(Now()))))</Value>
+        </Values>
+      </DefaultValue>
+      <Prompt>Дата начала</Prompt>
+    </ReportParameter>
+    <ReportParameter Name="dateEnd">
+      <DataType>DateTime</DataType>
+      <DefaultValue>
+        <Values>
+          <Value>= DateAdd(DateInterval.Hour,8,DateAdd("d",1,DateValue(Now())))</Value>
+        </Values>
+      </DefaultValue>
+      <Prompt>Дата окончания</Prompt>
+    </ReportParameter>
+    <ReportParameter Name="REPORT_ID">
+      <DataType>String</DataType>
+      <Prompt>Отчет</Prompt>
+      <ValidValues>
+        <DataSetReference>
+          <DataSetName>DS_REPORT_ID</DataSetName>
+          <ValueField>ORIGREC</ValueField>
+          <LabelField>REPORT_NAME</LabelField>
+        </DataSetReference>
+      </ValidValues>
+    </ReportParameter>
+    <ReportParameter Name="SHEET_ID">
+      <DataType>String</DataType>
+      <Prompt>Листы</Prompt>
+      <ValidValues>
+        <DataSetReference>
+          <DataSetName>DS_SHEETS</DataSetName>
+          <ValueField>ORIGREC</ValueField>
+          <LabelField>IN_REPORT_SHEET_NAME</LabelField>
+        </DataSetReference>
+      </ValidValues>
+      <MultiValue>true</MultiValue>
+    </ReportParameter>
+  </ReportParameters>
+  <Language>ru-RU</Language>
+  <ConsumeContainerWhitespace>true</ConsumeContainerWhitespace>
+  <rd:ReportUnitType>Cm</rd:ReportUnitType>
+  <rd:ReportID>10d064f8-f5c7-4fa5-b58c-d5f7bf23c87d</rd:ReportID>
+</Report>
